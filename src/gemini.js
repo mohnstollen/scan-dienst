@@ -29,7 +29,8 @@ async function generate(env, body) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(Number(env.GEMINI_TIMEOUT_MS) || 45_000)
+          // dichte Prospektseiten können bei „denkenden“ Modellen eine Weile dauern
+          signal: AbortSignal.timeout(Number(env.GEMINI_TIMEOUT_MS) || 90_000)
         });
       } catch (e) {
         throw new GeminiError(e.name === 'TimeoutError' ? 'timeout' : 'upstream', 504, `${model}: ${e.message}`);
@@ -76,8 +77,38 @@ export async function askGemini(env, task, image, contextText) {
   try { return JSON.parse(text); } catch { throw new GeminiError('bad_response', 502, `finishReason ${cand.finishReason || '?'}: ${text.slice(0, 200)}`); }
 }
 
-/* Kurzer Textaufruf zur Diagnose → { model } (wirft GeminiError) */
-export async function pingGemini(env) {
-  const { model } = await generate(env, { contents: [{ role: 'user', parts: [{ text: 'Antworte nur mit OK.' }] }], generationConfig: { maxOutputTokens: 5 } });
-  return { model };
+/* Diagnose Schritt für Schritt (mit Zeitmessung):
+   1. Modellliste abrufen – ist Gemini erreichbar, gilt der Schlüssel, welche Flash-Modelle gibt es?
+   2. jedes Modell mit einer winzigen Textanfrage, bis eines antwortet */
+export async function diagnose(env) {
+  const base = env.GEMINI_BASE_URL || DEFAULT_BASE;
+  const out = { ok: false, schluessel: !!env.GEMINI_API_KEY, schritte: [] };
+  if (!env.GEMINI_API_KEY) return { ...out, error: 'not_configured', detail: 'GEMINI_API_KEY fehlt' };
+  const headers = { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY };
+  const step = async (name, run) => {
+    const t0 = Date.now();
+    try { const r = await run(); out.schritte.push({ test: name, ms: Date.now() - t0, ...r }); return r; }
+    catch (e) { out.schritte.push({ test: name, ms: Date.now() - t0, fehler: e.message }); return null; }
+  };
+
+  await step('Modellliste', async () => {
+    const res = await fetch(`${base}/models?pageSize=200`, { headers, signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return { status: res.status, meldung: await message(res) };
+    const names = ((await res.json()).models || []).map(m => String(m.name).replace(/^models\//, ''));
+    return { status: res.status, flash: names.filter(n => /flash/.test(n)).slice(0, 20) };
+  });
+  for (const model of env.GEMINI_MODEL ? [env.GEMINI_MODEL] : MODELS) {
+    const r = await step(model, async () => {
+      const res = await fetch(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST', headers, signal: AbortSignal.timeout(25_000),
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Antworte nur mit OK.' }] }] })
+      });
+      if (!res.ok) return { status: res.status, meldung: await message(res) };
+      const data = await res.json();
+      const text = ((data.candidates || [])[0]?.content?.parts || []).map(p => p.text || '').join('');
+      return { status: res.status, antwort: text.slice(0, 40) };
+    });
+    if (r && r.status === 200) { out.ok = true; out.modell = model; break; }
+  }
+  return out;
 }
