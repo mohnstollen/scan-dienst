@@ -22,7 +22,9 @@ export const ERROR_TEXT = {
   blocked: 'Das Bild konnte nicht verarbeitet werden.',
   bad_request: 'Das Bild konnte nicht verarbeitet werden.',
   bad_response: 'Die Antwort der Erkennung war unvollständig – bitte erneut versuchen.',
-  upstream: 'Der Erkennungsdienst ist gerade nicht erreichbar.',
+  upstream: 'Gemini meldet einen Fehler – bitte später erneut versuchen.',
+  network: 'Der Scan-Dienst ist nicht erreichbar.',
+  internal: 'Im Scan-Dienst ist ein Fehler aufgetreten.',
   norecipe: 'Auf dieser Seite wurde kein Rezept gefunden.',
   fetch: 'Die Seite konnte nicht geladen werden.',
   status: 'Die Seite konnte nicht geladen werden.',
@@ -31,8 +33,17 @@ export const ERROR_TEXT = {
   unknown: 'Unbekannter Fehler.'
 };
 
+/* .code: Fehlercode, .status: HTTP-Status, .detail: technische Angabe des Dienstes (z. B. „gemini-flash-latest: HTTP 404 …“) */
 export class ScanError extends Error {
-  constructor(code, status) { super(ERROR_TEXT[code] || ERROR_TEXT.unknown); this.code = code; this.status = status; }
+  constructor(code, status, detail) {
+    super(ERROR_TEXT[code] || ERROR_TEXT.unknown);
+    this.code = code; this.status = status; this.detail = detail || '';
+  }
+  /* kurze Kennung für Fehlermeldungen, z. B. „upstream 404“ */
+  get kennung() {
+    const http = (this.detail.match(/HTTP (\d{3})/) || [])[1];
+    return [this.code, http].filter(Boolean).join(' ');
+  }
 }
 
 /* Bild für den Versand vorbereiten: richtig gedreht, längste Seite höchstens maxSize, JPEG.
@@ -65,10 +76,10 @@ export function createScanner({ endpoint, maxSize, quality } = {}) {
     if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new ScanError('offline');
     let res;
     try { res = await fetch(base + path, { ...init, signal }); }
-    catch (e) { throw new ScanError(e.name === 'AbortError' ? 'aborted' : (navigator.onLine === false ? 'offline' : 'upstream')); }
+    catch (e) { throw new ScanError(e.name === 'AbortError' ? 'aborted' : (navigator.onLine === false ? 'offline' : 'network'), 0, e.message); }
     let body = null;
     try { body = await res.json(); } catch {}
-    if (!res.ok || !body) throw new ScanError((body && body.error) || 'unknown', res.status);
+    if (!res.ok || !body) throw new ScanError((body && body.error) || 'unknown', res.status, (body && body.detail) || 'HTTP ' + res.status);
     return body;
   }
 

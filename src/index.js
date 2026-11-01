@@ -4,13 +4,14 @@
                           → { aufgabe, ergebnis }   (Aufgaben siehe src/tasks.js)
    GET  /rezept-link?url=…  → { name, ingredients, yield, url }   (schema.org/Recipe einer Webseite)
    GET  /aufgaben         → Liste der Aufgaben
+   GET  /diagnose         → kurzer Testaufruf an Gemini: welches Modell antwortet, welcher Fehler kommt
    GET  /                 → Status
 
-   Fehler: { error: '<code>' } mit passendem HTTP-Status, Codes siehe README.
+   Fehler: { error: '<code>', detail } mit passendem HTTP-Status, Codes siehe README.
    Geheimnis: GEMINI_API_KEY. Optional: GEMINI_MODEL, DEV=1 (erlaubt localhost als Herkunft). */
 
 import { TASKS } from './tasks.js';
-import { askGemini, GeminiError, DEFAULT_MODEL } from './gemini.js';
+import { askGemini, pingGemini, GeminiError, DEFAULT_MODEL } from './gemini.js';
 import { recipeFromLink } from './rezept-link.js';
 
 const LINK_APPS = ['https://mohnstollen.github.io']; // wer /rezept-link nutzen darf
@@ -22,6 +23,17 @@ const hits = new Map();
 
 export default {
   async fetch(request, env) {
+    try { return await handle(request, env); }
+    catch (e) {
+      // unerwarteter Fehler: trotzdem mit CORS antworten, sonst sieht die App nur „nicht erreichbar“
+      console.log('Interner Fehler', e && e.stack || e);
+      return json({ error: 'internal', detail: String(e && e.message || e).slice(0, 200) }, 500,
+        { 'Access-Control-Allow-Origin': request.headers.get('Origin') || '*', 'Vary': 'Origin' });
+    }
+  }
+};
+
+async function handle(request, env) {
     const url = new URL(request.url);
     const origin = request.headers.get('Origin') || '';
     const path = url.pathname.replace(/\/+$/, '') || '/';
@@ -35,6 +47,16 @@ export default {
     }
     if (path === '/' && request.method === 'GET' && !url.searchParams.has('url')) {
       return json({ dienst: 'scan-dienst', aufgaben: Object.keys(TASKS), modell: env.GEMINI_MODEL || DEFAULT_MODEL, bereit: !!env.GEMINI_API_KEY }, 200, cors);
+    }
+    if (path === '/diagnose' && request.method === 'GET') {
+      if (limited(request.headers.get('CF-Connecting-IP') || 'local')) return json({ error: 'rate_limit' }, 429, cors);
+      try {
+        const { model } = await pingGemini(env);
+        return json({ ok: true, modell: model }, 200, cors);
+      } catch (e) {
+        if (!(e instanceof GeminiError)) throw e;
+        return json({ ok: false, error: e.code, detail: e.detail }, 200, cors);
+      }
     }
     if (!allowed) return json({ error: 'origin' }, 403, cors);
 
@@ -65,14 +87,13 @@ export default {
         return json({ aufgabe: path.slice(6), ergebnis }, 200, cors);
       } catch (e) {
         if (!(e instanceof GeminiError)) throw e;
-        console.log('Gemini-Fehler', e.code, e.status, e.detail || '');
-        return json({ error: e.code }, e.status, cors);
+        console.log('Gemini-Fehler', e.code, e.status, e.detail);
+        return json({ error: e.code, detail: e.detail }, e.status, cors);
       }
     }
 
     return json({ error: 'not_found' }, 404, cors);
-  }
-};
+}
 
 /* Nur die in der Aufgabe erlaubten Kontextfelder übernehmen, als lesbaren Text */
 function contextText(task, kontext) {

@@ -36,12 +36,17 @@ keine eigenen Aufträge an Gemini schicken.
 | `POST /scan/<aufgabe>` mit `{ bild: { data: <Base64>, mimeType }, kontext }` | `{ aufgabe, ergebnis }` |
 | `GET /rezept-link?url=<Rezeptseite>` | `{ name, ingredients, yield, url }` (schema.org/Recipe der Seite, ohne KI) |
 | `GET /aufgaben` | Aufgaben mit Beschreibung und erlaubtem Kontext |
+| `GET /diagnose` | kurzer Testaufruf an Gemini: `{ ok, modell }` bzw. `{ ok: false, error, detail }` |
 | `GET /` | Status, z. B. `{ "bereit": true }` |
 
-Fehler kommen als `{ "error": "<code>" }`: `origin`, `unknown_task`, `no_image`, `image_type`, `too_large`,
+Fehler kommen als `{ "error": "<code>", "detail": "…" }` (`detail` z. B. `gemini-flash-latest: HTTP 404 …`): `origin`, `unknown_task`, `no_image`, `image_type`, `too_large`,
 `rate_limit`, `quota` (Tageslimit von Gemini), `timeout`, `bad_response`, `blocked`, `upstream`,
-`not_configured`, bei Rezept-Links `url`, `fetch`, `status`, `norecipe`. Der Client übersetzt sie in deutsche
-Meldungen (`ERROR_TEXT`).
+`not_configured`, `internal`, bei Rezept-Links `url`, `fetch`, `status`, `norecipe`. Der Client übersetzt sie in deutsche
+Meldungen (`ERROR_TEXT`); ist der Dienst selbst nicht erreichbar, meldet er `network`. `e.kennung` liefert eine kurze
+Angabe wie `upstream 404` für Fehlermeldungen.
+
+Das Modell wählt der Worker selbst: Kennt Gemini `gemini-flash-latest` nicht, probiert er `gemini-2.5-flash` und
+`gemini-2.0-flash` und merkt sich das erste, das antwortet. Bei Überlastung (HTTP 500/503) versucht er es einmal erneut.
 
 ## In einer App verwenden
 
@@ -88,6 +93,8 @@ Optional als Variable `GEMINI_MODEL`, Standard ist `gemini-flash-latest` (immer 
 
 ### 4. Prüfen
 `https://scan-dienst.<name>.workers.dev/` im Browser öffnen – erwartet: `"bereit": true`.
+`https://scan-dienst.<name>.workers.dev/diagnose` ruft Gemini kurz auf – erwartet: `"ok": true` und das genutzte Modell.
+Fehler zeigt Cloudflare zusätzlich unter Worker → **Beobachtbarkeit / Logs**.
 
 ## Entwicklung
 
