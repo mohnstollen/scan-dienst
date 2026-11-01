@@ -12,6 +12,7 @@ export const ERROR_TEXT = {
   offline: 'Keine Internetverbindung.',
   timeout: 'Die Erkennung hat zu lange gedauert – bitte erneut versuchen.',
   quota: 'Das Tageslimit für die Erkennung ist erreicht – bitte später erneut versuchen.',
+  busy: 'Gemini ist gerade überlastet – bitte in ein paar Minuten erneut versuchen.',
   rate_limit: 'Zu viele Scans in kurzer Zeit – bitte etwas warten.',
   too_large: 'Das Bild ist zu groß.',
   image_type: 'Dieses Bildformat wird nicht unterstützt.',

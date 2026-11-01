@@ -3,7 +3,8 @@
 
 // Modellwahl: Ohne die Variable GEMINI_MODEL nimmt der Worker die neuesten regulären Flash-Modelle aus der
 // Modellliste von Gemini (z. B. gemini-3.8-flash; nicht -lite, -preview, -image, -tts). Google stellt ältere
-// Modelle laufend ab – so bleibt der Dienst ohne Codeänderung aktuell. Rückfall: gemini-flash-latest.
+// Modelle laufend ab – so bleibt der Dienst ohne Codeänderung aktuell. Ist ein Modell überlastet („high demand“)
+// oder antwortet nicht, kommt sofort das nächste dran (siehe candidatesFrom).
 const FALLBACK_MODEL = 'gemini-flash-latest';
 const MODEL_LIST_MS = 6 * 60 * 60 * 1000; // Modellliste alle 6 Stunden neu abfragen
 const DEFAULT_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -17,9 +18,10 @@ let workingModel = null; // zuletzt erfolgreich genutztes Modell (je Worker-Inst
 let modelCache = null;   // { at, models }
 export const currentModel = env => env.GEMINI_MODEL || workingModel || 'automatisch';
 
-/* Reguläre Flash-Modelle, neueste Version zuerst (gemini-3.10-flash vor gemini-3.8-flash) */
-export function newestFlashModels(names) {
-  const version = n => (String(n).match(/^gemini-(\d+(?:\.\d+)*)-flash$/) || [])[1];
+/* Reguläre Flash-Modelle (bzw. Flash-Lite), neueste Version zuerst (gemini-3.10-flash vor gemini-3.8-flash) */
+export function newestFlashModels(names, kind = 'flash') {
+  const re = new RegExp('^gemini-(\\d+(?:\\.\\d+)*)-' + kind + '$');
+  const version = n => (String(n).match(re) || [])[1];
   const newer = (a, b) => {
     const x = version(a).split('.').map(Number), y = version(b).split('.').map(Number);
     for (let i = 0; i < Math.max(x.length, y.length); i++) if ((y[i] || 0) !== (x[i] || 0)) return (y[i] || 0) - (x[i] || 0);
@@ -33,7 +35,13 @@ async function listModels(env, base) {
   if (!res.ok) throw new GeminiError(res.status === 401 || res.status === 403 ? 'not_configured' : 'upstream', res.status, `Modellliste: HTTP ${res.status} ${await message(res)}`);
   return ((await res.json()).models || []).map(m => String(m.name).replace(/^models\//, ''));
 }
-const candidatesFrom = names => [...new Set([...newestFlashModels(names).slice(0, 2), FALLBACK_MODEL])];
+/* Reihenfolge der Versuche: drei neueste reguläre Flash-Modelle, dann das neueste Flash-Lite (meist mehr Kapazität),
+   zuletzt gemini-flash-latest */
+const candidatesFrom = names => [...new Set([
+  ...newestFlashModels(names).slice(0, 3),
+  ...newestFlashModels(names, 'flash-lite').slice(0, 1),
+  FALLBACK_MODEL
+])];
 
 async function candidateModels(env, base) {
   if (env.GEMINI_MODEL) return [env.GEMINI_MODEL];
@@ -53,34 +61,38 @@ async function generate(env, body) {
   const base = env.GEMINI_BASE_URL || DEFAULT_BASE; // nur für Tests überschreiben
   const candidates = await candidateModels(env, base);
   const models = workingModel && candidates.includes(workingModel) ? [workingModel, ...candidates.filter(m => m !== workingModel)] : candidates;
-  let last = null;
+  // Gesamtbudget für alle Versuche; je Modell höchstens PER_MODEL_MS (bei Überlastung hält Gemini Anfragen oft lange fest)
+  const deadline = Date.now() + (Number(env.GEMINI_TIMEOUT_MS) || 90_000);
+  const PER_MODEL_MS = 35_000;
+  let last = null, busy = false;
   for (const model of models) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      let res;
-      try {
-        res = await fetch(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
-          body: JSON.stringify(body),
-          // dichte Prospektseiten können bei „denkenden“ Modellen eine Weile dauern
-          signal: AbortSignal.timeout(Number(env.GEMINI_TIMEOUT_MS) || 90_000)
-        });
-      } catch (e) {
-        throw new GeminiError(e.name === 'TimeoutError' ? 'timeout' : 'upstream', 504, `${model}: ${e.message}`);
-      }
-      if (res.ok) { workingModel = model; return { model, data: await res.json() }; }
-
-      const detail = `${model}: HTTP ${res.status} ${await message(res)}`;
-      if (res.status === 429) throw new GeminiError('quota', 429, detail);
-      if (res.status === 400) throw new GeminiError('bad_request', 400, detail);
-      if (res.status === 401 || res.status === 403) throw new GeminiError('not_configured', 500, detail);
-      last = new GeminiError('upstream', 502, detail);
-      if (res.status === 404) break;                 // Modell unbekannt → nächstes Modell
-      if (attempt === 0 && res.status >= 500) { await sleep(800); continue; } // überlastet → einmal erneut
-      throw last;
+    const remaining = deadline - Date.now();
+    if (remaining < 5_000) break;
+    let res;
+    try {
+      res = await fetch(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(Math.min(remaining, PER_MODEL_MS))
+      });
+    } catch (e) {
+      if (e.name !== 'TimeoutError') throw new GeminiError('upstream', 502, `${model}: ${e.message}`);
+      busy = true; last = new GeminiError('timeout', 504, `${model}: keine Antwort`); continue; // nächstes Modell
     }
+    if (res.ok) { workingModel = model; return { model, data: await res.json() }; }
+
+    const detail = `${model}: HTTP ${res.status} ${await message(res)}`;
+    if (res.status === 429) throw new GeminiError('quota', 429, detail);
+    if (res.status === 400) throw new GeminiError('bad_request', 400, detail);
+    if (res.status === 401 || res.status === 403) throw new GeminiError('not_configured', 500, detail);
+    if (res.status === 503) { busy = true; last = new GeminiError('busy', 503, detail); continue; } // „high demand“ → nächstes Modell
+    last = new GeminiError('upstream', 502, detail);
+    if (res.status === 404 || res.status >= 500) continue; // Modell unbekannt bzw. Störung → nächstes Modell
+    throw last;
   }
-  throw last || new GeminiError('upstream', 502, 'kein Modell verfügbar');
+  if (busy) throw new GeminiError('busy', 503, last ? last.detail : 'überlastet');
+  throw last || new GeminiError('timeout', 504, 'Zeitlimit erreicht');
 }
 
 async function message(res) {
