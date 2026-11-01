@@ -40,15 +40,18 @@ keine eigenen Aufträge an Gemini schicken.
 | `GET /` | Status, z. B. `{ "bereit": true }` |
 
 Fehler kommen als `{ "error": "<code>", "detail": "…" }` (`detail` z. B. `gemini-flash-latest: HTTP 404 …`): `origin`, `unknown_task`, `no_image`, `image_type`, `too_large`,
-`rate_limit`, `quota` (Tageslimit von Gemini), `timeout`, `bad_response`, `blocked`, `upstream`,
+`rate_limit`, `quota` (Tageslimit von Gemini), `busy` (Gemini überlastet), `timeout`, `bad_response`, `blocked`, `upstream`,
 `not_configured`, `internal`, bei Rezept-Links `url`, `fetch`, `status`, `norecipe`. Der Client übersetzt sie in deutsche
 Meldungen (`ERROR_TEXT`); ist der Dienst selbst nicht erreichbar, meldet er `network`. `e.kennung` liefert eine kurze
 Angabe wie `upstream 404` für Fehlermeldungen.
 
-Das Modell wählt der Worker selbst: Er fragt die Modellliste von Gemini ab (alle 6 Stunden neu) und nimmt das
-neueste reguläre Flash-Modell, z. B. `gemini-3.8-flash` – ohne `-lite`, `-preview`, `-image`, `-tts`. Antwortet es mit
-„nicht gefunden“, folgt das nächstältere, zuletzt `gemini-flash-latest`. Google stellt ältere Modelle laufend ab; so
-bleibt der Dienst ohne Codeänderung aktuell. Bei Überlastung (HTTP 500/503) versucht er es einmal erneut.
+Das Modell wählt der Worker selbst: Er fragt die Modellliste von Gemini ab (alle 6 Stunden neu) und probiert der
+Reihe nach die drei neuesten regulären Flash-Modelle (z. B. `gemini-3.8-flash`, `-3.7-flash`, `-3.6-flash`), dann das
+neueste Flash-Lite und zuletzt `gemini-flash-latest`. Ist ein Modell überlastet („high demand“, HTTP 503), antwortet
+nicht innerhalb von 35 s oder ist abgeschaltet (404), kommt sofort das nächste dran – insgesamt höchstens 90 s.
+Das zuletzt erfolgreiche Modell wird zuerst probiert. Sind alle überlastet, meldet der Dienst `busy`.
+
+Im kostenlosen Tarif lehnt Google Anfragen bei hoher Last häufiger ab als in AI Studio oder im bezahlten Tarif.
 
 ## In einer App verwenden
 

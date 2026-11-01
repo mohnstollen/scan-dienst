@@ -119,7 +119,9 @@ test('Gemini-Fehler werden verständlich weitergegeben', async () => {
   await code(await scan(worker, 'rezept', { bild }), 502, 'bad_response');
   geminiReply = () => ({ status: 200, body: { promptFeedback: { blockReason: 'SAFETY' } } });
   await code(await scan(worker, 'rezept', { bild }), 422, 'blocked');
-  geminiReply = () => ({ status: 503, body: {} });
+  geminiReply = () => ({ status: 503, body: { error: { message: 'This model is currently experiencing high demand.' } } });
+  await code(await scan(worker, 'rezept', { bild }), 503, 'busy');
+  geminiReply = () => ({ status: 502, body: {} });
   await code(await scan(worker, 'rezept', { bild }), 502, 'upstream');
   await code(await scan(workerNoKey, 'rezept', { bild }, ORIGIN), 500, 'not_configured');
 });
@@ -154,15 +156,19 @@ test('Fehlerdetails enthalten Modell und HTTP-Status', async () => {
   const j = await r.json();
   assert.equal(r.status, 502);
   assert.equal(j.error, 'upstream');
-  assert.match(j.detail, /gemini-3\.8-flash: HTTP 500 Internal error/);
+  assert.match(j.detail, /HTTP 500 Internal error/);
 });
 
-test('Überlastung: zweiter Versuch', async () => {
-  let calls = 0;
-  geminiReply = () => (++calls === 1 ? { status: 503, body: { error: { message: 'overloaded' } } } : answer({ titel: '', portionen: '', zutaten: [] })());
+test('Überlastung: sofort nächstes Modell', async () => {
+  const seen = [];
+  geminiReply = req => {
+    const model = req.url.match(/models\/([^:]+)/)[1];
+    seen.push(model);
+    return /gemini-3\.8-flash$|gemini-3\.7-flash$/.test(model) ? { status: 503, body: { error: { message: 'high demand' } } } : answer({ titel: '', portionen: '', zutaten: [] })();
+  };
   const r = await scan(worker, 'rezept', { bild });
   assert.equal(r.status, 200);
-  assert.equal(calls, 2);
+  assert.deepEqual(seen.slice(-3), ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.5-flash']);
 });
 
 test('Diagnose-Seite', async () => {
@@ -177,7 +183,7 @@ test('Diagnose-Seite', async () => {
   let j = await (await worker.fetch('/diagnose')).json();
   assert.equal(j.ok, true);
   assert.equal(j.modell, 'gemini-3.8-flash');
-  assert.deepEqual(j.auswahl, ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-flash-latest']);
+  assert.deepEqual(j.auswahl, ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-3.8-flash-lite', 'gemini-flash-latest']);
   const by = Object.fromEntries(j.schritte.map(s => [s.test, s]));
   assert.deepEqual(by.Modellliste.flash, ['gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-2.5-flash']);
   assert.equal(by.generateContent.antwort, '"OK"');
@@ -201,20 +207,21 @@ test('Diagnose-Seite', async () => {
 });
 
 test('Unbekanntes Modell: nächstes Modell wird probiert und gemerkt', async () => {
+  // der vorige Test hat gemini-2.5-flash als funktionierend gemerkt – jetzt ist es abgeschaltet
   const seen = [];
   geminiReply = req => {
     seen.push(req.url.match(/models\/([^:]+)/)[1]);
-    return /gemini-3\.8-flash:/.test(req.url)
-      ? { status: 404, body: { error: { message: 'models/gemini-3.8-flash is no longer available' } } }
+    return /gemini-2\.5-flash:/.test(req.url)
+      ? { status: 404, body: { error: { message: 'models/gemini-2.5-flash is no longer available' } } }
       : answer({ titel: 'X', portionen: '', zutaten: [] })();
   };
   let r = await scan(worker, 'rezept', { bild });
   assert.equal(r.status, 200);
-  assert.deepEqual(seen, ['gemini-3.8-flash', 'gemini-3.7-flash']);
+  assert.deepEqual(seen, ['gemini-2.5-flash', 'gemini-3.8-flash']);
   seen.length = 0;
   r = await scan(worker, 'rezept', { bild });
   assert.equal(r.status, 200);
-  assert.deepEqual(seen, ['gemini-3.7-flash']); // gemerkt
+  assert.deepEqual(seen, ['gemini-3.8-flash']); // gemerkt
 });
 
 test('Modellwahl: neueste reguläre Flash-Modelle zuerst', () => {
