@@ -1,0 +1,10 @@
+name = "scan-dienst"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# Protokolle (z. B. Gemini-Fehler) im Cloudflare-Dashboard unter „Logs“ sichtbar
+[observability]
+enabled = true
+
+# Geheimnis GEMINI_API_KEY im Dashboard unter Einstellungen → Variablen und Geheimnisse
+# (oder: npx wrangler secret put GEMINI_API_KEY). Optional als Variable: GEMINI_MODEL.
