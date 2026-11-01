@@ -112,7 +112,9 @@ export async function askGemini(env, task, image, contextText) {
 
 /* Diagnose Schritt für Schritt (mit Zeitmessung):
    1. Modellliste abrufen – ist Gemini erreichbar, gilt der Schlüssel, welche Flash-Modelle gibt es?
-   2. jedes Modell mit einer winzigen Textanfrage, bis eines antwortet */
+   2. Für das bevorzugte Modell gleichzeitig mehrere Varianten (je max. 25 s):
+      generateContent normal, mit wenig „Nachdenken“ (thinkingLevel low / thinkingBudget 0), Streaming
+      (Zeit bis zu den ersten Daten), countTokens (ohne Erzeugung) und die neuere Interactions API. */
 export async function diagnose(env) {
   const base = env.GEMINI_BASE_URL || DEFAULT_BASE;
   const out = { ok: false, schluessel: !!env.GEMINI_API_KEY, schritte: [] };
@@ -120,30 +122,54 @@ export async function diagnose(env) {
   const headers = { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY };
   const step = async (name, run) => {
     const t0 = Date.now();
-    try { const r = await run(); out.schritte.push({ test: name, ms: Date.now() - t0, ...r }); return r; }
-    catch (e) { out.schritte.push({ test: name, ms: Date.now() - t0, fehler: e.message }); return null; }
+    let r;
+    try { r = { test: name, ...(await run(t0)) }; } catch (e) { r = { test: name, fehler: e.message }; }
+    r.ms = Date.now() - t0;
+    return r;
+  };
+  // Antworttext kurz zusammenfassen: Kandidatentext, Fehlermeldung, Tokenzahl oder Rohtext
+  const summary = text => {
+    try {
+      const j = JSON.parse(text);
+      const cand = (j.candidates || [])[0];
+      if (cand) return { antwort: (cand.content?.parts || []).map(p => p.text || '').join('').slice(0, 60), ende: cand.finishReason, tokens: j.usageMetadata };
+      if (j.error) return { meldung: String(j.error.message).slice(0, 300) };
+      if (j.totalTokens != null) return { tokens: j.totalTokens };
+    } catch {}
+    return { roh: text.slice(0, 200) };
+  };
+  const call = (path, body, { stream } = {}) => async t0 => {
+    const res = await fetch(base + path, { method: body ? 'POST' : 'GET', headers, body: body && JSON.stringify(body), signal: AbortSignal.timeout(25_000) });
+    const kopf_ms = Date.now() - t0;
+    if (stream && res.ok) {
+      const reader = res.body.getReader();
+      const { value } = await reader.read();
+      reader.cancel().catch(() => {});
+      return { status: res.status, kopf_ms, erste_daten_ms: Date.now() - t0, anfang: new TextDecoder().decode(value || new Uint8Array()).slice(0, 160) };
+    }
+    return { status: res.status, kopf_ms, ...summary(await res.text()) };
   };
 
   let names = [];
-  await step('Modellliste', async () => {
+  out.schritte.push(await step('Modellliste', async () => {
     const res = await fetch(`${base}/models?pageSize=200`, { headers, signal: AbortSignal.timeout(15_000) });
     if (!res.ok) return { status: res.status, meldung: await message(res) };
     names = ((await res.json()).models || []).map(m => String(m.name).replace(/^models\//, ''));
-    return { status: res.status, flash: names.filter(n => /flash/.test(n)).slice(0, 25) };
-  });
+    return { status: res.status, flash: names.filter(n => /^gemini-[\d.]+-flash$/.test(n)) };
+  }));
   out.auswahl = env.GEMINI_MODEL ? [env.GEMINI_MODEL] : candidatesFrom(names);
-  for (const model of out.auswahl) {
-    const r = await step(model, async () => {
-      const res = await fetch(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
-        method: 'POST', headers, signal: AbortSignal.timeout(25_000),
-        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Antworte nur mit OK.' }] }] })
-      });
-      if (!res.ok) return { status: res.status, meldung: await message(res) };
-      const data = await res.json();
-      const text = ((data.candidates || [])[0]?.content?.parts || []).map(p => p.text || '').join('');
-      return { status: res.status, antwort: text.slice(0, 40) };
-    });
-    if (r && r.status === 200) { out.ok = true; out.modell = model; break; }
-  }
+  const model = out.modell = out.auswahl[0];
+  const m = `/models/${encodeURIComponent(model)}`;
+  const contents = [{ role: 'user', parts: [{ text: 'Antworte nur mit OK.' }] }];
+  const tests = await Promise.all([
+    step('generateContent', call(m + ':generateContent', { contents })),
+    step('thinkingLevel low', call(m + ':generateContent', { contents, generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } })),
+    step('thinkingBudget 0', call(m + ':generateContent', { contents, generationConfig: { thinkingConfig: { thinkingBudget: 0 } } })),
+    step('Streaming', call(m + ':streamGenerateContent?alt=sse', { contents }, { stream: true })),
+    step('countTokens', call(m + ':countTokens', { contents })),
+    step('Interactions API', call('/interactions', { model, input: 'Antworte nur mit OK.' }))
+  ]);
+  out.schritte.push(...tests);
+  out.ok = tests.slice(0, 3).some(t => t.status === 200 && t.antwort);
   return out;
 }

@@ -166,14 +166,28 @@ test('Überlastung: zweiter Versuch', async () => {
 });
 
 test('Diagnose-Seite', async () => {
-  geminiReply = req => /gemini-3\.8-flash:/.test(req.url) ? { status: 404, body: { error: { message: 'not found' } } } : answer('OK')();
+  const seen = [];
+  geminiReply = req => {
+    seen.push(req.url);
+    if (/countTokens/.test(req.url)) return { status: 200, body: { totalTokens: 7 } };
+    if (/interactions/.test(req.url)) return { status: 400, body: { error: { message: 'Invalid JSON payload' } } };
+    if (req.body.generationConfig?.thinkingConfig?.thinkingBudget === 0) return { status: 400, body: { error: { message: 'thinkingBudget is not supported' } } };
+    return answer('OK')();
+  };
   let j = await (await worker.fetch('/diagnose')).json();
   assert.equal(j.ok, true);
-  assert.equal(j.modell, 'gemini-3.7-flash');
+  assert.equal(j.modell, 'gemini-3.8-flash');
   assert.deepEqual(j.auswahl, ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-flash-latest']);
-  assert.deepEqual(j.schritte.map(s => [s.test, s.status]), [['Modellliste', 200], ['gemini-3.8-flash', 404], ['gemini-3.7-flash', 200]]);
-  assert.ok(j.schritte[0].flash.includes('gemini-3.8-flash-lite'));
-  assert.equal(typeof j.schritte[0].ms, 'number');
+  const by = Object.fromEntries(j.schritte.map(s => [s.test, s]));
+  assert.deepEqual(by.Modellliste.flash, ['gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-2.5-flash']);
+  assert.equal(by.generateContent.antwort, '"OK"');
+  assert.equal(by['thinkingLevel low'].status, 200);
+  assert.equal(by['thinkingBudget 0'].meldung, 'thinkingBudget is not supported');
+  assert.equal(by.Streaming.status, 200);
+  assert.equal(typeof by.Streaming.erste_daten_ms, 'number');
+  assert.equal(by.countTokens.tokens, 7);
+  assert.equal(by['Interactions API'].meldung, 'Invalid JSON payload');
+  assert.ok(seen.some(u => /streamGenerateContent\?alt=sse/.test(u)));
 
   listReply = () => ({ status: 403, body: { error: { message: 'API key not valid' } } });
   geminiReply = () => ({ status: 403, body: { error: { message: 'API key not valid' } } });
