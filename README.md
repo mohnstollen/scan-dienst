@@ -45,8 +45,10 @@ Fehler kommen als `{ "error": "<code>", "detail": "…" }` (`detail` z. B. `gemi
 Meldungen (`ERROR_TEXT`); ist der Dienst selbst nicht erreichbar, meldet er `network`. `e.kennung` liefert eine kurze
 Angabe wie `upstream 404` für Fehlermeldungen.
 
-Das Modell wählt der Worker selbst: Kennt Gemini `gemini-flash-latest` nicht, probiert er `gemini-2.5-flash` und
-`gemini-2.0-flash` und merkt sich das erste, das antwortet. Bei Überlastung (HTTP 500/503) versucht er es einmal erneut.
+Das Modell wählt der Worker selbst: Er fragt die Modellliste von Gemini ab (alle 6 Stunden neu) und nimmt das
+neueste reguläre Flash-Modell, z. B. `gemini-3.8-flash` – ohne `-lite`, `-preview`, `-image`, `-tts`. Antwortet es mit
+„nicht gefunden“, folgt das nächstältere, zuletzt `gemini-flash-latest`. Google stellt ältere Modelle laufend ab; so
+bleibt der Dienst ohne Codeänderung aktuell. Bei Überlastung (HTTP 500/503) versucht er es einmal erneut.
 
 ## In einer App verwenden
 
@@ -92,7 +94,7 @@ Name `GEMINI_API_KEY`, Wert: der Schlüssel aus Schritt 1 → **Bereitstellen**.
 **Wichtig:** wirklich als *Geheimnis* anlegen, nicht als Text-Variable. Text-Variablen sind im Dashboard sichtbar und
 wurden vor `keep_vars = true` (in `wrangler.toml`) bei jeder Bereitstellung gelöscht.
 
-Optional als Variable `GEMINI_MODEL`, Standard ist `gemini-flash-latest` (immer das aktuelle Flash-Modell).
+Optional als Variable `GEMINI_MODEL`, um ein bestimmtes Modell festzulegen – sonst wählt der Worker automatisch (siehe oben).
 
 ### 4. Prüfen
 `https://scan-dienst.<name>.workers.dev/` im Browser öffnen – erwartet: `"bereit": true`.

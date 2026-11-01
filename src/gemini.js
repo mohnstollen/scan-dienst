@@ -1,10 +1,11 @@
 /* Aufruf der Gemini API (generateContent) mit Bild, Auftrag und vorgegebenem Antwortformat.
    https://ai.google.dev/api/generate-content */
 
-// Reihenfolge der Modelle: das erste, das Gemini kennt, wird genutzt (Modellnamen ändern sich gelegentlich).
-// Mit der Variablen GEMINI_MODEL lässt sich ein bestimmtes Modell vorgeben.
-export const MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.0-flash'];
-export const DEFAULT_MODEL = MODELS[0];
+// Modellwahl: Ohne die Variable GEMINI_MODEL nimmt der Worker die neuesten regulären Flash-Modelle aus der
+// Modellliste von Gemini (z. B. gemini-3.8-flash; nicht -lite, -preview, -image, -tts). Google stellt ältere
+// Modelle laufend ab – so bleibt der Dienst ohne Codeänderung aktuell. Rückfall: gemini-flash-latest.
+const FALLBACK_MODEL = 'gemini-flash-latest';
+const MODEL_LIST_MS = 6 * 60 * 60 * 1000; // Modellliste alle 6 Stunden neu abfragen
 const DEFAULT_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 export class GeminiError extends Error {
@@ -13,13 +14,45 @@ export class GeminiError extends Error {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let workingModel = null; // zuletzt erfolgreich genutztes Modell (je Worker-Instanz)
+let modelCache = null;   // { at, models }
+export const currentModel = env => env.GEMINI_MODEL || workingModel || 'automatisch';
+
+/* Reguläre Flash-Modelle, neueste Version zuerst (gemini-3.10-flash vor gemini-3.8-flash) */
+export function newestFlashModels(names) {
+  const version = n => (String(n).match(/^gemini-(\d+(?:\.\d+)*)-flash$/) || [])[1];
+  const newer = (a, b) => {
+    const x = version(a).split('.').map(Number), y = version(b).split('.').map(Number);
+    for (let i = 0; i < Math.max(x.length, y.length); i++) if ((y[i] || 0) !== (x[i] || 0)) return (y[i] || 0) - (x[i] || 0);
+    return 0;
+  };
+  return names.filter(version).sort(newer);
+}
+
+async function listModels(env, base) {
+  const res = await fetch(`${base}/models?pageSize=200`, { headers: { 'x-goog-api-key': env.GEMINI_API_KEY }, signal: AbortSignal.timeout(10_000) });
+  if (!res.ok) throw new GeminiError(res.status === 401 || res.status === 403 ? 'not_configured' : 'upstream', res.status, `Modellliste: HTTP ${res.status} ${await message(res)}`);
+  return ((await res.json()).models || []).map(m => String(m.name).replace(/^models\//, ''));
+}
+const candidatesFrom = names => [...new Set([...newestFlashModels(names).slice(0, 2), FALLBACK_MODEL])];
+
+async function candidateModels(env, base) {
+  if (env.GEMINI_MODEL) return [env.GEMINI_MODEL];
+  if (!modelCache || Date.now() - modelCache.at > MODEL_LIST_MS) {
+    let names = [];
+    try { names = await listModels(env, base); } catch (e) { console.log('Modellliste nicht abrufbar', e.detail || e.message); }
+    // ohne Liste nur kurz merken, damit der nächste Aufruf es erneut versucht
+    modelCache = { at: names.length ? Date.now() : Date.now() - MODEL_LIST_MS + 60_000, models: candidatesFrom(names) };
+  }
+  return modelCache.models;
+}
 
 /* Ein generateContent-Aufruf; probiert bei unbekanntem Modell (404) das nächste, bei Überlastung (500/503) einmal erneut.
    → { model, data } */
 async function generate(env, body) {
   if (!env.GEMINI_API_KEY) throw new GeminiError('not_configured', 500, 'GEMINI_API_KEY fehlt');
   const base = env.GEMINI_BASE_URL || DEFAULT_BASE; // nur für Tests überschreiben
-  const models = env.GEMINI_MODEL ? [env.GEMINI_MODEL] : workingModel ? [workingModel, ...MODELS.filter(m => m !== workingModel)] : MODELS;
+  const candidates = await candidateModels(env, base);
+  const models = workingModel && candidates.includes(workingModel) ? [workingModel, ...candidates.filter(m => m !== workingModel)] : candidates;
   let last = null;
   for (const model of models) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -91,13 +124,15 @@ export async function diagnose(env) {
     catch (e) { out.schritte.push({ test: name, ms: Date.now() - t0, fehler: e.message }); return null; }
   };
 
+  let names = [];
   await step('Modellliste', async () => {
     const res = await fetch(`${base}/models?pageSize=200`, { headers, signal: AbortSignal.timeout(15_000) });
     if (!res.ok) return { status: res.status, meldung: await message(res) };
-    const names = ((await res.json()).models || []).map(m => String(m.name).replace(/^models\//, ''));
-    return { status: res.status, flash: names.filter(n => /flash/.test(n)).slice(0, 20) };
+    names = ((await res.json()).models || []).map(m => String(m.name).replace(/^models\//, ''));
+    return { status: res.status, flash: names.filter(n => /flash/.test(n)).slice(0, 25) };
   });
-  for (const model of env.GEMINI_MODEL ? [env.GEMINI_MODEL] : MODELS) {
+  out.auswahl = env.GEMINI_MODEL ? [env.GEMINI_MODEL] : candidatesFrom(names);
+  for (const model of out.auswahl) {
     const r = await step(model, async () => {
       const res = await fetch(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
         method: 'POST', headers, signal: AbortSignal.timeout(25_000),

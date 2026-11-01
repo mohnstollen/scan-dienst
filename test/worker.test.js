@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { unstable_dev } from 'wrangler';
+import { newestFlashModels } from '../src/gemini.js';
 
 const ORIGIN = 'https://mohnstollen.github.io';
 const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -12,6 +13,9 @@ const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8B
 let mock, mockUrl, worker, workerNoKey;
 let lastGeminiRequest = null;
 let geminiReply = null; // (req) => { status, body }
+// Modellliste des nachgebauten Gemini (GET /models); listReply überschreibt die Antwort
+const MODEL_LIST = ['gemini-3.8-flash-lite', 'gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-3-flash-preview', 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-3.8-flash-image'];
+let listReply = null;
 
 before(async () => {
   // Nachgebautes Gemini + Rezeptseiten
@@ -20,6 +24,11 @@ before(async () => {
       try { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(await readFile(new URL('.' + req.url.slice(9), new URL('./fixtures/', import.meta.url)))); }
       catch { res.writeHead(404); res.end(); }
       return;
+    }
+    if (req.method === 'GET' && req.url.startsWith('/models')) {
+      const { status, body } = listReply ? listReply() : { status: 200, body: { models: MODEL_LIST.map(n => ({ name: 'models/' + n })) } };
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(body));
     }
     let raw = '';
     for await (const c of req) raw += c;
@@ -59,7 +68,7 @@ test('Rezept-Scan: Anfrage an Gemini korrekt aufgebaut, Ergebnis wird durchgerei
   assert.deepEqual(await r.json(), { aufgabe: 'rezept', ergebnis });
 
   const g = lastGeminiRequest;
-  assert.match(g.url, /\/models\/gemini-flash-latest:generateContent$/);
+  assert.match(g.url, /\/models\/gemini-3\.8-flash:generateContent$/); // neuestes reguläres Flash-Modell
   assert.equal(g.headers['x-goog-api-key'], 'test-key');
   const [img, prompt] = g.body.contents[0].parts;
   assert.deepEqual(img.inline_data, { mime_type: 'image/png', data: PNG_1PX });
@@ -145,7 +154,7 @@ test('Fehlerdetails enthalten Modell und HTTP-Status', async () => {
   const j = await r.json();
   assert.equal(r.status, 502);
   assert.equal(j.error, 'upstream');
-  assert.match(j.detail, /gemini-flash-latest: HTTP 500 Internal error/);
+  assert.match(j.detail, /gemini-3\.8-flash: HTTP 500 Internal error/);
 });
 
 test('Überlastung: zweiter Versuch', async () => {
@@ -157,20 +166,22 @@ test('Überlastung: zweiter Versuch', async () => {
 });
 
 test('Diagnose-Seite', async () => {
-  // Modellliste + erstes Modell unbekannt, zweites antwortet
-  geminiReply = req => req.url.startsWith('/models?') ? { status: 200, body: { models: [{ name: 'models/gemini-2.5-flash' }, { name: 'models/gemini-2.5-pro' }] } }
-    : /gemini-flash-latest/.test(req.url) ? { status: 404, body: { error: { message: 'not found' } } } : answer('OK')();
+  geminiReply = req => /gemini-3\.8-flash:/.test(req.url) ? { status: 404, body: { error: { message: 'not found' } } } : answer('OK')();
   let j = await (await worker.fetch('/diagnose')).json();
   assert.equal(j.ok, true);
-  assert.equal(j.modell, 'gemini-2.5-flash');
-  assert.deepEqual(j.schritte.map(s => [s.test, s.status]), [['Modellliste', 200], ['gemini-flash-latest', 404], ['gemini-2.5-flash', 200]]);
-  assert.deepEqual(j.schritte[0].flash, ['gemini-2.5-flash']);
+  assert.equal(j.modell, 'gemini-3.7-flash');
+  assert.deepEqual(j.auswahl, ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-flash-latest']);
+  assert.deepEqual(j.schritte.map(s => [s.test, s.status]), [['Modellliste', 200], ['gemini-3.8-flash', 404], ['gemini-3.7-flash', 200]]);
+  assert.ok(j.schritte[0].flash.includes('gemini-3.8-flash-lite'));
   assert.equal(typeof j.schritte[0].ms, 'number');
 
+  listReply = () => ({ status: 403, body: { error: { message: 'API key not valid' } } });
   geminiReply = () => ({ status: 403, body: { error: { message: 'API key not valid' } } });
   j = await (await worker.fetch('/diagnose')).json();
+  listReply = null;
   assert.equal(j.ok, false);
   assert.equal(j.schritte[0].meldung, 'API key not valid');
+  assert.deepEqual(j.auswahl, ['gemini-flash-latest']);
   j = await (await workerNoKey.fetch('/diagnose')).json();
   assert.deepEqual([j.ok, j.error], [false, 'not_configured']);
 });
@@ -179,15 +190,21 @@ test('Unbekanntes Modell: nächstes Modell wird probiert und gemerkt', async () 
   const seen = [];
   geminiReply = req => {
     seen.push(req.url.match(/models\/([^:]+)/)[1]);
-    return /gemini-flash-latest/.test(req.url)
-      ? { status: 404, body: { error: { message: 'models/gemini-flash-latest is not found' } } }
+    return /gemini-3\.8-flash:/.test(req.url)
+      ? { status: 404, body: { error: { message: 'models/gemini-3.8-flash is no longer available' } } }
       : answer({ titel: 'X', portionen: '', zutaten: [] })();
   };
   let r = await scan(worker, 'rezept', { bild });
   assert.equal(r.status, 200);
-  assert.deepEqual(seen, ['gemini-flash-latest', 'gemini-2.5-flash']);
+  assert.deepEqual(seen, ['gemini-3.8-flash', 'gemini-3.7-flash']);
   seen.length = 0;
   r = await scan(worker, 'rezept', { bild });
   assert.equal(r.status, 200);
-  assert.deepEqual(seen, ['gemini-2.5-flash']); // gemerkt
+  assert.deepEqual(seen, ['gemini-3.7-flash']); // gemerkt
+});
+
+test('Modellwahl: neueste reguläre Flash-Modelle zuerst', () => {
+  assert.deepEqual(
+    newestFlashModels(['gemini-3.8-flash', 'gemini-3.10-flash', 'gemini-3-flash', 'gemini-3.8-flash-lite', 'gemini-3.9-flash-preview', 'gemini-flash-latest', 'gemini-3.5-pro', 'gemini-4-flash-image']),
+    ['gemini-3.10-flash', 'gemini-3.8-flash', 'gemini-3-flash']);
 });
