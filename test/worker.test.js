@@ -138,3 +138,48 @@ test('Rezept-Link: JSON-LD, @graph, Microdata, keine Rezeptdaten', async () => {
   const bad = await worker.fetch('/rezept-link?url=' + encodeURIComponent('file:///etc/passwd'), { headers: { Origin: ORIGIN } });
   assert.equal(bad.status, 400);
 });
+
+test('Fehlerdetails enthalten Modell und HTTP-Status', async () => {
+  geminiReply = () => ({ status: 500, body: { error: { message: 'Internal error' } } });
+  const r = await scan(worker, 'rezept', { bild });
+  const j = await r.json();
+  assert.equal(r.status, 502);
+  assert.equal(j.error, 'upstream');
+  assert.match(j.detail, /gemini-flash-latest: HTTP 500 Internal error/);
+});
+
+test('Überlastung: zweiter Versuch', async () => {
+  let calls = 0;
+  geminiReply = () => (++calls === 1 ? { status: 503, body: { error: { message: 'overloaded' } } } : answer({ titel: '', portionen: '', zutaten: [] })());
+  const r = await scan(worker, 'rezept', { bild });
+  assert.equal(r.status, 200);
+  assert.equal(calls, 2);
+});
+
+test('Diagnose-Seite', async () => {
+  geminiReply = () => answer('OK')();
+  let j = await (await worker.fetch('/diagnose')).json();
+  assert.deepEqual(j, { ok: true, modell: 'gemini-flash-latest' });
+  geminiReply = () => ({ status: 403, body: { error: { message: 'API key not valid' } } });
+  j = await (await worker.fetch('/diagnose')).json();
+  assert.equal(j.ok, false);
+  assert.equal(j.error, 'not_configured');
+  assert.match(j.detail, /API key not valid/);
+});
+
+test('Unbekanntes Modell: nächstes Modell wird probiert und gemerkt', async () => {
+  const seen = [];
+  geminiReply = req => {
+    seen.push(req.url.match(/models\/([^:]+)/)[1]);
+    return /gemini-flash-latest/.test(req.url)
+      ? { status: 404, body: { error: { message: 'models/gemini-flash-latest is not found' } } }
+      : answer({ titel: 'X', portionen: '', zutaten: [] })();
+  };
+  let r = await scan(worker, 'rezept', { bild });
+  assert.equal(r.status, 200);
+  assert.deepEqual(seen, ['gemini-flash-latest', 'gemini-2.5-flash']);
+  seen.length = 0;
+  r = await scan(worker, 'rezept', { bild });
+  assert.equal(r.status, 200);
+  assert.deepEqual(seen, ['gemini-2.5-flash']); // gemerkt
+});
