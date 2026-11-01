@@ -157,14 +157,22 @@ test('Überlastung: zweiter Versuch', async () => {
 });
 
 test('Diagnose-Seite', async () => {
-  geminiReply = () => answer('OK')();
+  // Modellliste + erstes Modell unbekannt, zweites antwortet
+  geminiReply = req => req.url.startsWith('/models?') ? { status: 200, body: { models: [{ name: 'models/gemini-2.5-flash' }, { name: 'models/gemini-2.5-pro' }] } }
+    : /gemini-flash-latest/.test(req.url) ? { status: 404, body: { error: { message: 'not found' } } } : answer('OK')();
   let j = await (await worker.fetch('/diagnose')).json();
-  assert.deepEqual(j, { ok: true, modell: 'gemini-flash-latest' });
+  assert.equal(j.ok, true);
+  assert.equal(j.modell, 'gemini-2.5-flash');
+  assert.deepEqual(j.schritte.map(s => [s.test, s.status]), [['Modellliste', 200], ['gemini-flash-latest', 404], ['gemini-2.5-flash', 200]]);
+  assert.deepEqual(j.schritte[0].flash, ['gemini-2.5-flash']);
+  assert.equal(typeof j.schritte[0].ms, 'number');
+
   geminiReply = () => ({ status: 403, body: { error: { message: 'API key not valid' } } });
   j = await (await worker.fetch('/diagnose')).json();
   assert.equal(j.ok, false);
-  assert.equal(j.error, 'not_configured');
-  assert.match(j.detail, /API key not valid/);
+  assert.equal(j.schritte[0].meldung, 'API key not valid');
+  j = await (await workerNoKey.fetch('/diagnose')).json();
+  assert.deepEqual([j.ok, j.error], [false, 'not_configured']);
 });
 
 test('Unbekanntes Modell: nächstes Modell wird probiert und gemerkt', async () => {

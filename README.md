@@ -36,7 +36,7 @@ keine eigenen Aufträge an Gemini schicken.
 | `POST /scan/<aufgabe>` mit `{ bild: { data: <Base64>, mimeType }, kontext }` | `{ aufgabe, ergebnis }` |
 | `GET /rezept-link?url=<Rezeptseite>` | `{ name, ingredients, yield, url }` (schema.org/Recipe der Seite, ohne KI) |
 | `GET /aufgaben` | Aufgaben mit Beschreibung und erlaubtem Kontext |
-| `GET /diagnose` | kurzer Testaufruf an Gemini: `{ ok, modell }` bzw. `{ ok: false, error, detail }` |
+| `GET /diagnose` | Test Schritt für Schritt mit Zeitmessung: Modellliste (Erreichbarkeit, Schlüssel, verfügbare Flash-Modelle), dann je Modell eine kurze Anfrage → `{ ok, modell, schritte }` |
 | `GET /` | Status, z. B. `{ "bereit": true }` |
 
 Fehler kommen als `{ "error": "<code>", "detail": "…" }` (`detail` z. B. `gemini-flash-latest: HTTP 404 …`): `origin`, `unknown_task`, `no_image`, `image_type`, `too_large`,
@@ -89,11 +89,15 @@ Worker `scan-dienst` → **Einstellungen → Variablen und Geheimnisse → Hinzu
 Name `GEMINI_API_KEY`, Wert: der Schlüssel aus Schritt 1 → **Bereitstellen**.
 (Kommandozeile: `npx wrangler secret put GEMINI_API_KEY`.)
 
+**Wichtig:** wirklich als *Geheimnis* anlegen, nicht als Text-Variable. Text-Variablen sind im Dashboard sichtbar und
+wurden vor `keep_vars = true` (in `wrangler.toml`) bei jeder Bereitstellung gelöscht.
+
 Optional als Variable `GEMINI_MODEL`, Standard ist `gemini-flash-latest` (immer das aktuelle Flash-Modell).
 
 ### 4. Prüfen
 `https://scan-dienst.<name>.workers.dev/` im Browser öffnen – erwartet: `"bereit": true`.
-`https://scan-dienst.<name>.workers.dev/diagnose` ruft Gemini kurz auf – erwartet: `"ok": true` und das genutzte Modell.
+`https://scan-dienst.<name>.workers.dev/diagnose` testet Gemini Schritt für Schritt – erwartet: `"ok": true` und das
+genutzte Modell; `schritte` zeigt Antwortzeiten und Fehlermeldungen.
 Fehler zeigt Cloudflare zusätzlich unter Worker → **Beobachtbarkeit / Logs**.
 
 ## Entwicklung

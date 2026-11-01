@@ -11,7 +11,7 @@
    Geheimnis: GEMINI_API_KEY. Optional: GEMINI_MODEL, DEV=1 (erlaubt localhost als Herkunft). */
 
 import { TASKS } from './tasks.js';
-import { askGemini, pingGemini, GeminiError, DEFAULT_MODEL } from './gemini.js';
+import { askGemini, diagnose, GeminiError, DEFAULT_MODEL } from './gemini.js';
 import { recipeFromLink } from './rezept-link.js';
 
 const LINK_APPS = ['https://mohnstollen.github.io']; // wer /rezept-link nutzen darf
@@ -50,13 +50,7 @@ async function handle(request, env) {
     }
     if (path === '/diagnose' && request.method === 'GET') {
       if (limited(request.headers.get('CF-Connecting-IP') || 'local')) return json({ error: 'rate_limit' }, 429, cors);
-      try {
-        const { model } = await pingGemini(env);
-        return json({ ok: true, modell: model }, 200, cors);
-      } catch (e) {
-        if (!(e instanceof GeminiError)) throw e;
-        return json({ ok: false, error: e.code, detail: e.detail }, 200, cors);
-      }
+      return json(await diagnose(env), 200, cors);
     }
     if (!allowed) return json({ error: 'origin' }, 403, cors);
 
