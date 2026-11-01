@@ -11,7 +11,7 @@
    Geheimnis: GEMINI_API_KEY. Optional: GEMINI_MODEL, DEV=1 (erlaubt localhost als Herkunft). */
 
 import { TASKS } from './tasks.js';
-import { askGemini, diagnose, GeminiError, DEFAULT_MODEL } from './gemini.js';
+import { askGemini, diagnose, GeminiError, currentModel } from './gemini.js';
 import { recipeFromLink } from './rezept-link.js';
 
 const LINK_APPS = ['https://mohnstollen.github.io']; // wer /rezept-link nutzen darf
@@ -46,7 +46,7 @@ async function handle(request, env) {
       return new Response(null, { headers: { ...cors, 'Access-Control-Allow-Methods': 'GET, POST', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400' } });
     }
     if (path === '/' && request.method === 'GET' && !url.searchParams.has('url')) {
-      return json({ dienst: 'scan-dienst', aufgaben: Object.keys(TASKS), modell: env.GEMINI_MODEL || DEFAULT_MODEL, bereit: !!env.GEMINI_API_KEY }, 200, cors);
+      return json({ dienst: 'scan-dienst', aufgaben: Object.keys(TASKS), modell: currentModel(env), bereit: !!env.GEMINI_API_KEY }, 200, cors);
     }
     if (path === '/diagnose' && request.method === 'GET') {
       if (limited(request.headers.get('CF-Connecting-IP') || 'local')) return json({ error: 'rate_limit' }, 429, cors);
