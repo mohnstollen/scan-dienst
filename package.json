@@ -1,0 +1,14 @@
+{
+  "name": "scan-dienst",
+  "private": true,
+  "type": "module",
+  "description": "Fotos per Gemini in strukturierte Daten umwandeln (Cloudflare Worker + Client-Modul)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "3.114.17"
+  }
+}

@@ -1,0 +1,3 @@
+# Für `npm run dev` nach .dev.vars kopieren (wird nicht eingecheckt)
+GEMINI_API_KEY=dein-schluessel
+DEV=1
