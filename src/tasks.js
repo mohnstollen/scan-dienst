@@ -12,6 +12,11 @@ const list = items => ({ type: 'ARRAY', items });
 
 const EIGENE_APPS = ['https://mohnstollen.github.io'];
 
+// Rezept-Kategorien und -Merkmale wie im Einkaufszettel (dort in app.js: RECIPE_CATEGORIES, RECIPE_TAGS)
+const KATEGORIEN = ['Frühstück', 'Vorspeise', 'Suppe', 'Salat', 'Hauptgericht', 'Beilage', 'Dessert',
+  'Kuchen & Torten', 'Gebäck & Plätzchen', 'Brot & Brötchen', 'Snack', 'Getränk', 'Sonstiges'];
+const MERKMALE = ['Frühling', 'Sommer', 'Herbst', 'Winter', 'Weihnachten', 'Ostern', 'Grillen', 'vegetarisch', 'vegan', 'schnell'];
+
 export const TASKS = {
   rezept: {
     beschreibung: 'Zutatenliste aus Rezeptfoto oder Screenshot',
@@ -27,10 +32,15 @@ Lies ausschließlich die Zutaten dieses Rezepts aus.
 - menge: Menge mit Einheit in üblicher Schreibweise („200 g“, „2 EL“, „1 Prise“, „1 Pck.“, „2–3“); leer, wenn keine.
   Alte Schreibweisen umwandeln („Eßl.“ → „EL“, „Teel.“ → „TL“).
 - Steht eine Zutat mehrfach (z. B. in Teig und Füllung), führe sie mehrfach auf.
+- kategorie: die passendste Kategorie für das Gericht.
+- merkmale: nur zutreffende – Jahreszeit oder Anlass, wenn das Gericht typisch dafür ist; „vegetarisch“/„vegan“ nur,
+  wenn das aus den Zutaten eindeutig folgt; „schnell“ bei höchstens etwa 30 Minuten Zubereitung.
 - Ist kein Rezept zu erkennen, gib eine leere Zutatenliste zurück. Erfinde nichts.`,
     format: obj({
       titel: S,
       portionen: S,
+      kategorie: { type: 'STRING', enum: KATEGORIEN },
+      merkmale: list({ type: 'STRING', enum: MERKMALE }),
       zutaten: list(obj({ name: S, menge: S, hinweis: S, abschnitt: S }))
     })
   },
