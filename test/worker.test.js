@@ -76,7 +76,10 @@ test('Rezept-Scan: Anfrage an Gemini korrekt aufgebaut, Ergebnis wird durchgerei
   assert.match(prompt.text, /abschnitte: Obst & Gemüse, Backwaren/);
   assert.doesNotMatch(prompt.text, /darf nicht ankommen/);
   assert.equal(g.body.generationConfig.responseMimeType, 'application/json');
-  assert.ok(g.body.generationConfig.responseSchema.properties.zutaten);
+  const props = g.body.generationConfig.responseSchema.properties;
+  assert.ok(props.zutaten);
+  assert.ok(props.kategorie.enum.includes('Kuchen & Torten'));
+  assert.ok(props.merkmale.items.enum.includes('Weihnachten'));
 });
 
 test('Vokabel- und Prospekt-Aufgabe nutzen ihr eigenes Format', async () => {
@@ -135,10 +138,14 @@ test('Rezept-Link: JSON-LD, @graph, Microdata, keine Rezeptdaten', async () => {
   assert.equal(r.body.name, 'Lasagne von Mama');
   assert.equal(r.body.yield, '4 Portionen');
   assert.ok(r.body.ingredients.includes('2 Zehe/n Knoblauch'));
+  assert.equal(r.body.category, 'Hauptspeise');
+  assert.equal(r.body.keywords, 'Pasta, Auflauf, Backen');
   r = await get('wprm.html');
   assert.equal(r.body.name, 'Käsekuchen ohne Boden');
   assert.equal(r.body.yield, '12 Stücke');
   assert.ok(r.body.ingredients.includes('1 ½ TL Backpulver'));
+  assert.equal(r.body.category, 'Kuchen');
+  assert.equal(r.body.keywords, 'Käsekuchen, ohne Boden');
   r = await get('microdata.html');
   assert.deepEqual(r.body.ingredients, ['250 g Mehl', '3 Eier', '500 ml Milch', '1 Prise Salz']);
   r = await get('nope.html');

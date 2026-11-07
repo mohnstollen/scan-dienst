@@ -88,7 +88,10 @@ function normalize(r) {
   // „recipeYield“ ist mal „4“, mal „4 Portionen“, mal beides – die Angabe mit Einheit bevorzugen
   const yields = [].concat(r.recipeYield || []).map(text).filter(Boolean);
   const yld = yields.find(y => /[a-zäöü]/i.test(y)) || (yields[0] ? yields[0] + ' Portionen' : '');
-  return { name: text(r.name || r.headline), ingredients, yield: yld };
+  // Kategorie und Schlagwörter der Seite – die App leitet daraus ihre Rezept-Kategorie ab
+  const category = [].concat(r.recipeCategory || []).map(text).filter(Boolean).join(', ');
+  const keywords = [].concat(r.keywords || []).map(text).filter(Boolean).join(', ').slice(0, 300);
+  return { name: text(r.name || r.headline), ingredients, yield: yld, category, keywords };
 }
 
 function microdata(html) {
@@ -98,7 +101,7 @@ function microdata(html) {
   if (!ingredients.length) return null;
   const h1 = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
   const og = html.match(/<meta[^>]*property\s*=\s*["']og:title["'][^>]*content\s*=\s*["']([^"']*)["']/i);
-  return { name: text(h1 ? h1[1] : og ? og[1] : ''), ingredients, yield: '' };
+  return { name: text(h1 ? h1[1] : og ? og[1] : ''), ingredients, yield: '', category: '', keywords: '' };
 }
 
 /* HTML-Tags entfernen, Entities auflösen, Leerraum zusammenfassen */
